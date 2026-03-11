@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      SSH_USERNAME: ${SSH_USERNAME:-user}
+      SSH_PASSWORD: ${SSH_PASSWORD:-password123}
+      AGENT_TIMEOUT_MS: "10000"
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    environment:
+      BACKEND_URL: http://backend:3000
+      AGENT_ID: ${AGENT_ID:-agent-1}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
+      SSH_ADDR: 127.0.0.1:22
+      SSH_PASS: ${SSH_PASSWORD:-password123}
+    depends_on:
+      - backend
+    restart: unless-stopped

@@ -1,0 +1,28 @@
+Port 22
+ListenAddress 0.0.0.0
+
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Authentication
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+ChallengeResponseAuthentication no
+UsePAM no
+
+# Restrict to the 'user' account created in Dockerfile
+AllowUsers user
+
+# Disable unnecessary features for this demo
+X11Forwarding no
+AllowTcpForwarding no
+GatewayPorts no
+PermitTunnel no
+
+PrintMotd no
+AcceptEnv LANG LC_*
+
+Subsystem sftp /usr/lib/ssh/sftp-server

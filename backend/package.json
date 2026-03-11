@@ -1,0 +1,18 @@
+{
+  "name": "ws-portforward-backend",
+  "version": "1.0.0",
+  "description": "Backend for WebSocket port-forwarding demo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ssh2": "^1.16.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

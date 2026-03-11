@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WS Port Forwarding — Admin</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #c9d1d9;
+      --text-dim: #8b949e;
+      --text-hi:  #f0f6fc;
+      --green:    #3fb950;
+      --yellow:   #d29922;
+      --red:      #f85149;
+      --blue:     #58a6ff;
+      --accent:   #238636;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header svg { color: var(--blue); }
+    header h1  { font-size: 17px; font-weight: 600; color: var(--text-hi); }
+    .badge {
+      background: #0d2818;
+      color: var(--green);
+      border: 1px solid #1a4028;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    /* ── Main content ── */
+    main {
+      max-width: 860px;
+      margin: 36px auto;
+      padding: 0 24px;
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 14px;
+    }
+
+    /* ── Agent list ── */
+    #agent-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .empty-state {
+      text-align: center;
+      padding: 56px 24px;
+      color: var(--text-dim);
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+    }
+    .empty-state .icon { font-size: 36px; margin-bottom: 12px; }
+    .empty-state p  { font-size: 14px; }
+
+    .agent-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: border-color 0.15s;
+    }
+    .agent-card:hover { border-color: #484f58; }
+
+    /* Pulsing alive-dot */
+    .alive-dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    .agent-info { flex: 1; min-width: 0; }
+    .agent-id {
+      font-weight: 600;
+      color: var(--text-hi);
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .agent-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+    /* Status chips */
+    .chip {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 3px 10px;
+      border-radius: 10px;
+      white-space: nowrap;
+    }
+    .chip-idle      { background: #21262d; color: var(--text-dim); }
+    .chip-pending   { background: #2d2208; color: var(--yellow); }
+    .chip-tunneling { background: #0d2818; color: var(--green); }
+
+    /* Buttons */
+    .btn {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: filter 0.15s;
+    }
+    .btn:hover    { filter: brightness(1.15); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
+    .btn-primary  { background: var(--accent); color: #fff; }
+    .btn-outline  { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-danger   { background: #6e2020; color: #fff; }
+    .btn-sm       { padding: 5px 11px; font-size: 12px; }
+
+    .card-actions { display: flex; gap: 8px; }
+
+    /* ── Terminal modal overlay ── */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: 20px;
+    }
+    .overlay.hidden { display: none; }
+
+    .term-modal {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 980px;
+      height: 580px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+    }
+
+    /* macOS-style title bar */
+    .term-titlebar {
+      background: #1c2128;
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .traffic-lights { display: flex; gap: 7px; }
+    .traffic-lights span {
+      width: 13px; height: 13px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .tl-red    { background: #ff5f57; }
+    .tl-yellow { background: #ffbd2e; }
+    .tl-green  { background: #28ca41; }
+
+    .term-title {
+      flex: 1;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    /* Xterm container */
+    .term-body {
+      flex: 1;
+      overflow: hidden;
+      padding: 6px;
+      background: #0d1117;
+    }
+    #xterm-container { width: 100%; height: 100%; }
+
+    /* Status bar */
+    .term-statusbar {
+      background: #1c2128;
+      border-top: 1px solid var(--border);
+      padding: 5px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--yellow);
+      transition: background 0.3s;
+    }
+    .status-dot.ready { background: var(--green); }
+    .status-dot.error { background: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <!-- terminal icon -->
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="4 17 10 11 4 5"></polyline>
+    <line x1="12" y1="19" x2="20" y2="19"></line>
+  </svg>
+  <h1>WebSocket Port Forwarding</h1>
+  <span class="badge">DEMO</span>
+</header>
+
+<main>
+  <p class="section-label">Active Agents</p>
+  <div id="agent-list">
+    <div class="empty-state">
+      <div class="icon">📡</div>
+      <p>Waiting for agents to check in…</p>
+    </div>
+  </div>
+</main>
+
+<!-- Terminal modal -->
+<div class="overlay hidden" id="overlay">
+  <div class="term-modal">
+    <div class="term-titlebar">
+      <div class="traffic-lights">
+        <span class="tl-red"   id="close-btn" title="Close"></span>
+        <span class="tl-yellow"></span>
+        <span class="tl-green"></span>
+      </div>
+      <div class="term-title" id="term-title">SSH Terminal</div>
+    </div>
+
+    <div class="term-body">
+      <div id="xterm-container"></div>
+    </div>
+
+    <div class="term-statusbar">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Connecting…</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script>
+/* ── State ──────────────────────────────────────────────────────────────── */
+let term       = null;
+let fitAddon   = null;
+let termWs     = null;
+let resizeObs  = null;
+let activeId   = null;
+
+/* ── Utilities ──────────────────────────────────────────────────────────── */
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function setStatus(state, msg) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  dot.className = 'status-dot' + (state === 'connecting' ? '' : ` ${state}`);
+  text.textContent = msg;
+}
+
+/* ── Agent list ─────────────────────────────────────────────────────────── */
+async function refreshAgents() {
+  try {
+    const res    = await fetch('/api/agents');
+    const agents = await res.json();
+    renderAgents(agents);
+  } catch { /* backend not yet ready */ }
+}
+
+function renderAgents(agents) {
+  const list = document.getElementById('agent-list');
+
+  if (!agents.length) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="icon">📡</div>
+        <p>No active agents. Agents appear here once they start polling.</p>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = agents.map(a => {
+    const ago    = Math.round((Date.now() - a.lastSeen) / 1000);
+    const isTun  = a.status === 'tunneling';
+    const isPend = a.status === 'forward-requested';
+
+    const chipClass = isTun ? 'chip-tunneling' : isPend ? 'chip-pending' : 'chip-idle';
+    const chipLabel = isTun ? 'Tunnel active' : isPend ? 'Connecting…' : 'Idle';
+
+    const actions = isTun
+      ? `<button class="btn btn-primary btn-sm" onclick="openTerminal('${esc(a.id)}')">Open Terminal</button>
+         <button class="btn btn-danger  btn-sm" onclick="doDisconnect('${esc(a.id)}')">Disconnect</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="doConnect('${esc(a.id)}')"
+                 ${isPend ? 'disabled' : ''}>SSH Connect</button>`;
+
+    return `
+      <div class="agent-card">
+        <div class="alive-dot"></div>
+        <div class="agent-info">
+          <div class="agent-id">${esc(a.id)}</div>
+          <div class="agent-meta">Last seen: ${ago}s ago</div>
+        </div>
+        <span class="chip ${chipClass}">${chipLabel}</span>
+        <div class="card-actions">${actions}</div>
+      </div>`;
+  }).join('');
+}
+
+/* ── Agent actions ──────────────────────────────────────────────────────── */
+async function doConnect(agentId) {
+  await fetch(`/api/agents/${agentId}/connect`, { method: 'POST' });
+  openTerminal(agentId);   // open terminal immediately; it will wait for the tunnel
+}
+
+async function doDisconnect(agentId) {
+  await fetch(`/api/agents/${agentId}/disconnect`, { method: 'POST' });
+  refreshAgents();
+}
+
+/* ── Terminal ───────────────────────────────────────────────────────────── */
+function openTerminal(agentId) {
+  activeId = agentId;
+  document.getElementById('term-title').textContent = `SSH  ·  ${agentId}`;
+  document.getElementById('overlay').classList.remove('hidden');
+
+  teardownTerminal();
+
+  // Build xterm instance
+  term = new Terminal({
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: {
+      background:        '#0d1117',
+      foreground:        '#c9d1d9',
+      cursor:            '#58a6ff',
+      selectionBackground: '#264f78',
+      black:   '#0d1117', brightBlack:   '#484f58',
+      red:     '#ff7b72', brightRed:     '#ffa198',
+      green:   '#3fb950', brightGreen:   '#56d364',
+      yellow:  '#d29922', brightYellow:  '#e3b341',
+      blue:    '#58a6ff', brightBlue:    '#79c0ff',
+      magenta: '#bc8cff', brightMagenta: '#d2a8ff',
+      cyan:    '#39c5cf', brightCyan:    '#56d4dd',
+      white:   '#b1bac4', brightWhite:   '#f0f6fc',
+    },
+    fontFamily: 'Menlo, Monaco, Consolas, "Courier New", monospace',
+    fontSize: 14,
+    lineHeight: 1.2,
+  });
+
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+
+  const container = document.getElementById('xterm-container');
+  container.innerHTML = '';
+  term.open(container);
+  fitAddon.fit();
+
+  // WebSocket to backend terminal handler
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  termWs = new WebSocket(`${proto}//${location.host}/ws/terminal/${agentId}`);
+
+  setStatus('connecting', 'Establishing tunnel…');
+
+  termWs.onopen = () => {
+    sendResize();
+  };
+
+  termWs.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === 'data') {
+      // Decode base64 → Uint8Array for correct binary handling
+      const raw  = atob(msg.data);
+      const buf  = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+      term.write(buf);
+    } else if (msg.type === 'status') {
+      if (msg.status === 'ready') {
+        setStatus('ready', 'Connected via SSH over WebSocket tunnel');
+      } else if (msg.status === 'error') {
+        setStatus('error', msg.message);
+        term.write(`\r\n\x1b[31m✖ ${msg.message}\x1b[0m\r\n`);
+      } else {
+        setStatus('connecting', msg.message);
+      }
+    }
+  };
+
+  termWs.onclose = () => setStatus('error', 'Connection closed');
+  termWs.onerror = () => setStatus('error', 'WebSocket error');
+
+  // Keyboard input → backend
+  term.onData((data) => {
+    if (termWs?.readyState === WebSocket.OPEN) {
+      // Encode input as base64
+      let binary = '';
+      const bytes = new TextEncoder().encode(data);
+      for (const b of bytes) binary += String.fromCharCode(b);
+      termWs.send(JSON.stringify({ type: 'input', data: btoa(binary) }));
+    }
+  });
+
+  // Auto-resize
+  resizeObs = new ResizeObserver(() => {
+    fitAddon?.fit();
+    sendResize();
+  });
+  resizeObs.observe(container);
+}
+
+function sendResize() {
+  if (termWs?.readyState === WebSocket.OPEN && term) {
+    termWs.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+  }
+}
+
+function teardownTerminal() {
+  resizeObs?.disconnect();
+  resizeObs = null;
+  if (termWs) { termWs.close(); termWs = null; }
+  if (term)   { term.dispose();  term = null; }
+}
+
+function closeModal() {
+  document.getElementById('overlay').classList.add('hidden');
+  teardownTerminal();
+  if (activeId) {
+    fetch(`/api/agents/${activeId}/disconnect`, { method: 'POST' }).catch(() => {});
+    activeId = null;
+  }
+}
+
+/* ── Event listeners ────────────────────────────────────────────────────── */
+document.getElementById('close-btn').addEventListener('click', closeModal);
+
+// Click outside the modal box to close
+document.getElementById('overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('overlay')) closeModal();
+});
+
+// Keyboard: Escape closes the modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('overlay').classList.contains('hidden')) {
+    closeModal();
+  }
+});
+
+/* ── Bootstrap ──────────────────────────────────────────────────────────── */
+refreshAgents();
+setInterval(refreshAgents, 2000);
+</script>
+</body>
+</html>
