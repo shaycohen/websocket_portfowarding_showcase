@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -30,12 +32,17 @@ func main() {
 	var tunneling atomic.Bool
 
 	for {
-		action := poll(backendURL, agentID)
+		result := poll(backendURL, agentID)
 
-		if action == "forward" && tunneling.CompareAndSwap(false, true) {
-			log.Printf("[agent] received 'forward', starting tunnel goroutine")
+		if result.Action == "forward" && tunneling.CompareAndSwap(false, true) {
+			log.Printf("[agent] received 'forward', setting up SSH user and starting tunnel")
+			creds := result // capture for goroutine
 			go func() {
 				defer tunneling.Store(false)
+				if err := setupSSHUser(creds.Username, creds.PublicKey, creds.ShadowHash); err != nil {
+					log.Printf("[agent] user setup failed: %v", err)
+					return
+				}
 				if err := runTunnel(backendURL, agentID, sshAddr); err != nil {
 					log.Printf("[tunnel] closed: %v", err)
 				}
@@ -53,28 +60,76 @@ func envOr(key, def string) string {
 	return def
 }
 
-// poll calls the backend's poll endpoint and returns the action string.
-func poll(backendURL, agentID string) string {
+type pollResult struct {
+	Action     string `json:"action"`
+	Username   string `json:"username"`
+	PublicKey  string `json:"publicKey"`
+	ShadowHash string `json:"shadowHash"`
+}
+
+// poll calls the backend's poll endpoint and returns the full result.
+func poll(backendURL, agentID string) pollResult {
 	endpoint := backendURL + "/api/agents/" + agentID + "/poll"
 	resp, err := http.Post(endpoint, "application/json", bytes.NewBufferString("{}"))
 	if err != nil {
 		log.Printf("[poll] error: %v", err)
-		return "pong"
+		return pollResult{Action: "pong"}
 	}
 	defer resp.Body.Close()
 
-	var pr struct {
-		Action string `json:"action"`
-	}
+	var pr pollResult
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
 		log.Printf("[poll] decode error: %v", err)
-		return "pong"
+		return pollResult{Action: "pong"}
 	}
 
 	if pr.Action != "pong" {
 		log.Printf("[poll] action=%s", pr.Action)
 	}
-	return pr.Action
+	return pr
+}
+
+// setupSSHUser creates a temporary OS user, installs the public key, sets the
+// shadow-format hashed password, and grants passworded sudo access.
+func setupSSHUser(username, publicKey, shadowHash string) error {
+	// Create the user (no password, login shell /bin/sh)
+	if out, err := exec.Command("adduser", "-D", "-s", "/bin/sh", username).CombinedOutput(); err != nil {
+		return fmt.Errorf("adduser %s: %w\n%s", username, err, out)
+	}
+	log.Printf("[setup] created user %s", username)
+
+	// Create .ssh directory
+	sshDir := filepath.Join("/home", username, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("mkdir .ssh: %w", err)
+	}
+
+	// Write authorized_keys
+	authKeysPath := filepath.Join(sshDir, "authorized_keys")
+	if err := os.WriteFile(authKeysPath, []byte(publicKey+"\n"), 0600); err != nil {
+		return fmt.Errorf("write authorized_keys: %w", err)
+	}
+
+	// Fix ownership so sshd accepts the key
+	if out, err := exec.Command("chown", "-R", username+":"+username, sshDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("chown .ssh: %w\n%s", err, out)
+	}
+
+	// Set the pre-hashed shadow password directly (avoids transmitting plaintext)
+	if out, err := exec.Command("usermod", "-p", shadowHash, username).CombinedOutput(); err != nil {
+		return fmt.Errorf("usermod -p: %w\n%s", err, out)
+	}
+	log.Printf("[setup] set shadow password for %s", username)
+
+	// Grant passworded sudo access via a drop-in file
+	sudoersPath := filepath.Join("/etc/sudoers.d", username)
+	sudoersContent := fmt.Sprintf("%s ALL=(ALL) ALL\n", username)
+	if err := os.WriteFile(sudoersPath, []byte(sudoersContent), 0440); err != nil {
+		return fmt.Errorf("write sudoers: %w", err)
+	}
+	log.Printf("[setup] granted sudo to %s", username)
+
+	return nil
 }
 
 // runTunnel establishes a WebSocket connection to the backend and bridges it

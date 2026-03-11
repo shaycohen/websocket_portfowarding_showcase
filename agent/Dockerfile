@@ -15,17 +15,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /agent .
 # ── Runtime stage ───────────────────────────────────────────────────────────────
 FROM alpine:3.21
 
-# Install OpenSSH server and netcat (used in entrypoint wait-loop)
-RUN apk add --no-cache openssh netcat-openbsd
+# Install OpenSSH server, netcat, sudo and shadow utils (usermod)
+RUN apk add --no-cache openssh netcat-openbsd sudo shadow
 
 # Generate static SSH host keys
 RUN ssh-keygen -A
 
-# Create the SSH user; password is set at container start from $SSH_PASS
-RUN adduser -D -s /bin/sh user
-
-# Create the sshd privilege-separation directory
-RUN mkdir -p /run/sshd
+# Create the sshd privilege-separation directory and sudoers drop-in dir
+RUN mkdir -p /run/sshd /etc/sudoers.d && \
+    echo '#includedir /etc/sudoers.d' >> /etc/sudoers
 
 COPY sshd_config /etc/ssh/sshd_config
 COPY --from=builder /agent /usr/local/bin/agent

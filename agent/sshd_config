@@ -13,9 +13,6 @@ AuthorizedKeysFile .ssh/authorized_keys
 ChallengeResponseAuthentication no
 UsePAM no
 
-# Restrict to the 'user' account created in Dockerfile
-AllowUsers user
-
 # Disable unnecessary features for this demo
 X11Forwarding no
 AllowTcpForwarding no

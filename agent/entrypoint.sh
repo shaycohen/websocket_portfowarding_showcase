@@ -1,11 +1,6 @@
 #!/bin/sh
 set -e
 
-# Set the SSH user's password from the environment variable
-if [ -n "$SSH_PASS" ]; then
-    echo "user:${SSH_PASS}" | chpasswd
-fi
-
 # Start SSH daemon in the background
 /usr/sbin/sshd
 

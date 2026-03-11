@@ -3,6 +3,10 @@
 const http = require('http');
 const net = require('net');
 const path = require('path');
+const { execSync } = require('child_process');
+const { randomBytes } = require('crypto');
+const fs = require('fs');
+const os = require('os');
 
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
@@ -10,8 +14,6 @@ const { Client: SshClient } = require('ssh2');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
-const SSH_USERNAME = process.env.SSH_USERNAME ?? 'user';
-const SSH_PASSWORD = process.env.SSH_PASSWORD ?? 'password123';
 const AGENT_TIMEOUT_MS = parseInt(process.env.AGENT_TIMEOUT_MS ?? '10000', 10);
 
 // ── App setup ─────────────────────────────────────────────────────────────────
@@ -22,6 +24,38 @@ app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
+// ── Credential generation ─────────────────────────────────────────────────────
+/**
+ * Generates a temporary SSH user credential set:
+ *   - username:   short, sanitised, unique
+ *   - publicKey:  Ed25519 public key in OpenSSH authorized_keys format
+ *   - privateKey: Ed25519 private key in PEM format (used by ssh2 client)
+ *   - shadowHash: SHA-512 crypt(3) hash ($6$…) for direct /etc/shadow insertion
+ */
+function generateSSHCredentials(agentId) {
+  const sanitized = agentId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 10);
+  const suffix = randomBytes(3).toString('hex');
+  const username = `tmp_${sanitized}_${suffix}`;
+
+  // Generate Ed25519 key pair via ssh-keygen
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sshcred-'));
+  const keyPath = path.join(tmpDir, 'id_ed25519');
+  try {
+    execSync(`ssh-keygen -t ed25519 -f "${keyPath}" -N "" -q`);
+    const privateKey = fs.readFileSync(keyPath, 'utf8');
+    const publicKey = fs.readFileSync(`${keyPath}.pub`, 'utf8').trim();
+
+    // Generate a random password, keep it for the admin UI, and produce a
+    // SHA-512 shadow hash ($6$…) so the agent never receives the plaintext.
+    const plainPassword = randomBytes(16).toString('hex');
+    const shadowHash = execSync(`openssl passwd -6 "${plainPassword}"`).toString().trim();
+
+    return { username, publicKey, privateKey, shadowHash, plainPassword };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // ── Agent state ───────────────────────────────────────────────────────────────
 /**
  * Map<agentId, AgentState>
@@ -30,6 +64,7 @@ const wss = new WebSocketServer({ noServer: true });
  *   id:               string
  *   lastSeen:         number          – epoch ms of last poll
  *   status:           'idle' | 'forward-requested' | 'tunneling'
+ *   sshCredentials:   object | null   – { username, publicKey, privateKey, shadowHash }
  *   tunnelWs:         WebSocket | null
  *   tcpServer:        net.Server | null
  *   tcpPort:          number | null   – ephemeral port used by ssh2
@@ -44,6 +79,7 @@ function upsertAgent(id) {
       id,
       lastSeen: Date.now(),
       status: 'idle',
+      sshCredentials: null,
       tunnelWs: null,
       tcpServer: null,
       tcpPort: null,
@@ -71,6 +107,7 @@ function cleanupTunnel(agent) {
     agent.tunnelWs.close();
   }
   agent.tunnelWs = null;
+  agent.sshCredentials = null;
 }
 
 // ── HTTP endpoints ─────────────────────────────────────────────────────────────
@@ -80,10 +117,11 @@ app.post('/api/agents/:id/poll', (req, res) => {
   const agent = upsertAgent(req.params.id);
   agent.lastSeen = Date.now();
 
-  if (agent.status === 'forward-requested') {
-    // Reply 'forward' – the agent will open the WS tunnel.
-    // Status advances to 'tunneling' once the WS connects (handleAgentTunnel).
-    res.json({ action: 'forward' });
+  if (agent.status === 'forward-requested' && agent.sshCredentials) {
+    // Send 'forward' with the temporary credentials the agent needs to set up
+    // its local SSH user.  The private key stays on the backend only.
+    const { username, publicKey, shadowHash } = agent.sshCredentials;
+    res.json({ action: 'forward', username, publicKey, shadowHash });
   } else {
     res.json({ action: 'pong' });
   }
@@ -116,7 +154,9 @@ app.post('/api/agents/:id/connect', (req, res) => {
     return res.status(404).json({ error: 'Agent not found or offline' });
   }
   if (agent.status === 'idle') {
+    agent.sshCredentials = generateSSHCredentials(agent.id);
     agent.status = 'forward-requested';
+    console.log(`[connect] generated credentials for agent ${agent.id}, user=${agent.sshCredentials.username}`);
   }
   res.json({ status: agent.status });
 });
@@ -319,12 +359,23 @@ function handleAdminTerminal(agentId, ws) {
       return;
     }
 
-    // Tunnel is live – open SSH session through it
+    if (!agent.sshCredentials) {
+      send({ type: 'status', status: 'error', message: 'No SSH credentials available' });
+      ws.close();
+      return;
+    }
+
+    // Tunnel is live – open SSH session through it using the temp user's private key
     ssh = new SshClient();
 
     ssh.on('ready', () => {
       console.log(`[terminal] SSH ready for agent ${agentId}`);
-      send({ type: 'status', status: 'ready', message: 'SSH session established' });
+      send({
+        type: 'status',
+        status: 'ready',
+        message: 'SSH session established',
+        sudoPassword: agent.sshCredentials.plainPassword,
+      });
 
       ssh.shell({ term: 'xterm-256color', rows: 24, cols: 80 }, (err, s) => {
         if (err) {
@@ -379,8 +430,8 @@ function handleAdminTerminal(agentId, ws) {
     ssh.connect({
       host: '127.0.0.1',
       port: agent.tcpPort,
-      username: SSH_USERNAME,
-      password: SSH_PASSWORD,
+      username: agent.sshCredentials.username,
+      privateKey: agent.sshCredentials.privateKey,
       readyTimeout: 10_000,
       hostVerifier: () => true,
     });

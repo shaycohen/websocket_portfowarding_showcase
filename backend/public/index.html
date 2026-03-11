@@ -231,6 +231,77 @@
     }
     .status-dot.ready { background: var(--green); }
     .status-dot.error { background: var(--red); }
+
+    /* ── SUDO password floating button ── */
+    .term-body { position: relative; }
+
+    .sudo-btn {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      z-index: 10;
+      background: #2d2208;
+      color: var(--yellow);
+      border: 1px solid #5a4000;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter 0.15s, box-shadow 0.15s;
+      letter-spacing: 0.3px;
+    }
+    .sudo-btn:hover { filter: brightness(1.25); box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+    .sudo-btn.hidden { display: none; }
+
+    /* Password popover */
+    .sudo-popover {
+      position: absolute;
+      bottom: 48px;
+      right: 12px;
+      z-index: 11;
+      background: #161b22;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.6);
+    }
+    .sudo-popover.hidden { display: none; }
+
+    .sudo-popover-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 2px;
+    }
+
+    .sudo-pw-text {
+      font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+      font-size: 13px;
+      color: var(--text-hi);
+      letter-spacing: 0.5px;
+      user-select: all;
+    }
+
+    .sudo-copy-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      transition: color 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .sudo-copy-btn:hover { color: var(--text-hi); border-color: #484f58; }
+    .sudo-copy-btn.copied { color: var(--green); border-color: var(--green); }
   </style>
 </head>
 <body>
@@ -269,6 +340,21 @@
 
     <div class="term-body">
       <div id="xterm-container"></div>
+
+      <!-- SUDO password — shown once SSH is ready -->
+      <button id="sudo-btn" class="sudo-btn hidden">SUDO Password</button>
+
+      <div id="sudo-popover" class="sudo-popover hidden">
+        <span class="sudo-popover-label">sudo pw</span>
+        <span id="sudo-pw-text" class="sudo-pw-text"></span>
+        <button id="sudo-copy-btn" class="sudo-copy-btn" title="Copy to clipboard">
+          <!-- Bootstrap Icons: clipboard -->
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1z"/>
+            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div class="term-statusbar">
@@ -282,11 +368,12 @@
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <script>
 /* ── State ──────────────────────────────────────────────────────────────── */
-let term       = null;
-let fitAddon   = null;
-let termWs     = null;
-let resizeObs  = null;
-let activeId   = null;
+let term         = null;
+let fitAddon     = null;
+let termWs       = null;
+let resizeObs    = null;
+let activeId     = null;
+let sudoPassword = null;
 
 /* ── Utilities ──────────────────────────────────────────────────────────── */
 function esc(s) {
@@ -425,6 +512,11 @@ function openTerminal(agentId) {
     } else if (msg.type === 'status') {
       if (msg.status === 'ready') {
         setStatus('ready', 'Connected via SSH over WebSocket tunnel');
+        if (msg.sudoPassword) {
+          sudoPassword = msg.sudoPassword;
+          document.getElementById('sudo-pw-text').textContent = sudoPassword;
+          document.getElementById('sudo-btn').classList.remove('hidden');
+        }
       } else if (msg.status === 'error') {
         setStatus('error', msg.message);
         term.write(`\r\n\x1b[31m✖ ${msg.message}\x1b[0m\r\n`);
@@ -467,6 +559,10 @@ function teardownTerminal() {
   resizeObs = null;
   if (termWs) { termWs.close(); termWs = null; }
   if (term)   { term.dispose();  term = null; }
+  sudoPassword = null;
+  document.getElementById('sudo-btn').classList.add('hidden');
+  document.getElementById('sudo-popover').classList.add('hidden');
+  document.getElementById('sudo-copy-btn').classList.remove('copied');
 }
 
 function closeModal() {
@@ -491,6 +587,35 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !document.getElementById('overlay').classList.contains('hidden')) {
     closeModal();
   }
+});
+
+/* ── SUDO password button / popover ─────────────────────────────────────── */
+document.getElementById('sudo-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('sudo-popover').classList.toggle('hidden');
+});
+
+document.getElementById('sudo-copy-btn').addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (!sudoPassword) return;
+  const copyBtn = document.getElementById('sudo-copy-btn');
+  try {
+    await navigator.clipboard.writeText(sudoPassword);
+  } catch {
+    // Fallback: select the text so the user can copy manually
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('sudo-pw-text'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  copyBtn.classList.add('copied');
+  setTimeout(() => copyBtn.classList.remove('copied'), 1500);
+});
+
+// Close popover when clicking elsewhere in the document
+document.addEventListener('click', () => {
+  document.getElementById('sudo-popover').classList.add('hidden');
 });
 
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
